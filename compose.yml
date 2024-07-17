@@ -1,6 +1,6 @@
 services:
   ddc-fcs:
-    image: ${CI_REGISTRY_IMAGE:-gremid}/ddc-fcs:${CI_COMMIT_SHORT_SHA:-latest}
+    image: docker.zdl.org/ddc-fcs:${CI_COMMIT_SHORT_SHA:-latest}
     build:
       context: .
     restart: ${DDC_FCS_RESTART:-no}
