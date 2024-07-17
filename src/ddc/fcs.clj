@@ -10,7 +10,7 @@
    [taoensso.timbre :as log])
   (:import
    (eu.clarin.sru.server SRUConstants SRUException SRUQueryParserRegistry$Builder SRUResultCountPrecision SRUSearchResultSet SRUServer SRUServerConfig)
-   (eu.clarin.sru.server.fcs AdvancedDataViewWriter AdvancedDataViewWriter$Unit DataView DataView$DeliveryPolicy Layer Layer$ContentEncoding ResourceInfo SimpleEndpointSearchEngineBase XMLStreamWriterHelper)
+   (eu.clarin.sru.server.fcs DataView DataView$DeliveryPolicy Layer Layer$ContentEncoding ResourceInfo SimpleEndpointSearchEngineBase XMLStreamWriterHelper)
    (eu.clarin.sru.server.fcs.utils SimpleEndpointDescription)
    (java.net URI)
    (javax.servlet.http HttpServlet)
@@ -20,7 +20,8 @@
 (log/handle-uncaught-jvm-exceptions!)
 (log/merge-config!
  {:min-level [["eu.clarin.sru.server.SRUServer" :warn]
-              ["*"(if env/debug? :debug :info)]]
+              ["ddc.fcs" (if env/debug? :debug :info)]
+              ["*" :info]]
   :appenders {:println (log/println-appender {:stream :std-err})}})
 
 (require '[ddc.client :as client])
@@ -73,12 +74,13 @@
 
 (def data-layer->uri
   (into {}
-        (map #(vector % (URI. (str "http://dwds.de/ns/fcs/layer/" %))))
+        (map (juxt identity #(str "http://dwds.de/ns/fcs/layer/" %)))
         (keys data-layer->index)))
 
 (defn data-layer
   [id]
-  (Layer. id (data-layer->uri id) id Layer$ContentEncoding/EMPTY nil nil nil))
+  (Layer. id (URI. (data-layer->uri id)) id Layer$ContentEncoding/EMPTY
+          nil nil nil))
 
 (def all-data-layers
   (into [] (map data-layer) (keys data-layer->index)))
@@ -144,21 +146,82 @@
   (let [tokens (map #(into {} (map vector indices %)) tokens)]
     (into [] (map assoc-space-after) (partition-all 2 1 tokens))))
 
-(defn result->writer
-  [result]
+(def hits-ns
+  "http://clarin.eu/fcs/dataview/hits")
+
+(def hits-mime-type
+  "application/x-clarin-fcs-hits+xml")
+
+(def adv-ns
+  "http://clarin.eu/fcs/dataview/advanced")
+
+(def adv-mime-type
+  "application/x-clarin-fcs-adv+xml")
+
+(defn result->xml
+  [query-type pid frag-ref result writer]
   (let [indices (vec (cons "hl" (get-in result ["meta_" "indices_"])))
-        tokens  (parse-tokens indices (second (get result "ctx_")))
-        writer  (AdvancedDataViewWriter. AdvancedDataViewWriter$Unit/ITEM)]
-    (loop [n 1 offset 0 tokens tokens]
-      (when-let [{hl "hl" w "w" ws "ws" :as token} (first tokens)]
-        (let [ws? (not= ws "0")
-              end (+ offset (count w) (if ws? 1 0))]
-          (doseq [[layer index] data-layer->index
-                  :let          [v (token index)] :when v
-                  :let          [v (cond-> v (and (= index "w") ws?) (str " "))]]
-            (. writer addSpan (data-layer->uri layer) (inc offset) end v hl))
-          (recur (inc n) end (rest tokens)))))
-    writer))
+        tokens  (parse-tokens indices (second (get result "ctx_")))]
+    (doto writer
+      (XMLStreamWriterHelper/writeStartResource pid nil)
+      (XMLStreamWriterHelper/writeStartResourceFragment nil frag-ref)
+      (XMLStreamWriterHelper/writeStartDataView hits-mime-type)
+      (. (setPrefix "hits" hits-ns))
+      (. (writeStartElement hits-ns "Result"))
+      (. (writeNamespace "hits" hits-ns)))
+    (doseq [{hl "hl" w "w" ws "ws" :as _token} tokens]
+      (if (= hl 1)
+        (doto writer
+          (. (writeStartElement hits-ns "Hit"))
+          (. (writeCharacters w))
+          (. (writeEndElement)))
+        (. writer (writeCharacters w)))
+      (when (not= ws "0")
+        (. writer (writeCharacters " "))))
+    (doto writer
+      (. (writeEndElement))
+      (XMLStreamWriterHelper/writeEndDataView))
+    (when (= query-type "fcs")
+      (doto writer
+        (XMLStreamWriterHelper/writeStartDataView adv-mime-type)
+        (. (setPrefix "adv" adv-ns))
+        (. (writeStartElement adv-ns "Advanced"))
+        (. (writeNamespace "adv" adv-ns))
+        (. (writeAttribute "unit" "item")))
+      (. writer (writeStartElement adv-ns "Segments"))
+      (loop [n 1 start 1 tokens tokens]
+        (when-let [{w "w" ws "ws"} (first tokens)]
+          (let [end (dec (+ start (count w)))]
+            (doto writer
+              (. (writeEmptyElement adv-ns "Segment"))
+              (. (writeAttribute "id" (str "s" n)))
+              (. (writeAttribute "start" (str start)))
+              (. (writeAttribute "end" (str end))))
+            (recur (inc n)
+                   (cond-> (inc end) (not= ws "0") inc)
+                   (rest tokens)))))
+      (. writer (writeEndElement))
+      (. writer (writeStartElement adv-ns "Layers"))
+      (doseq [[layer index] data-layer->index
+              :when         (-> tokens first (get index))]
+        (. writer (writeStartElement adv-ns "Layer"))
+        (. writer (writeAttribute "id" (str (data-layer->uri layer))))
+        (doseq [[i {hl "hl" v index}] (map-indexed list tokens)]
+          (. writer (writeStartElement adv-ns "Span"))
+          (. writer (writeAttribute "ref" (str "s" (inc i))))
+          (when (= hl 1)
+            (. writer (writeAttribute "highlight" "h1")))
+          (. writer (writeCharacters v))
+          (. writer (writeEndElement)))
+        (. writer (writeEndElement)))
+      (. writer (writeEndElement))
+      (doto writer
+        (. (writeEndElement))
+        (XMLStreamWriterHelper/writeEndDataView)))
+    (doto writer
+      (XMLStreamWriterHelper/writeEndResourceFragment)
+      (XMLStreamWriterHelper/writeEndResource))
+    nil))
 
 (defn result-link
   [corpus query]
@@ -171,37 +234,28 @@
   (let [endpoint     (client/endpoints corpus)
         metadata     (client/metadata corpus)
         pid          (metadata :pid)
+        query-type   (. request (getQueryType))
         query        (query/->ddc (. request (getQuery)))
-        frag-ref    (result-link corpus query)
+        frag-ref     (result-link corpus query)
         query        (str query " !#has[avail,OR0W] #separate")
         start-record (. request (getStartRecord))
         num-records  (min (. request (getMaximumRecords)) maximum-records)
-        results      (into []
-                           (take num-records)
-                           (client/query endpoint query
-                                         :offset (dec start-record)
-                                         :page-size (min num-records 1000)))
+        results      (->> (client/query endpoint query
+                                        :offset (dec start-record)
+                                        :page-size (min num-records 1000))
+                          (into [] (take num-records)))
         total        (or (some-> results first meta :total) 0)
         num-results  (count results)
-        result-idx   (volatile! 0)]
+        result->xml  (partial result->xml query-type pid frag-ref)
+        idx          (volatile! -1)]
     (proxy [SRUSearchResultSet] [diagnostics]
       (getTotalRecordCount [] (min maximum-records total))
       (getRecordCount [] (count results))
       (getResultCountPrecision [] SRUResultCountPrecision/EXACT)
       (getRecordSchemaIdentifier [] record-schema-identifier)
-      (nextRecord [] (< @result-idx num-results))
+      (nextRecord [] (-> idx deref inc (< num-results)))
       (getRecordIdentifier [] nil)
-      (writeRecord [writer]
-        (let [result      (results @result-idx)
-              data-writer (result->writer result)]
-          (XMLStreamWriterHelper/writeStartResource writer pid nil)
-          (XMLStreamWriterHelper/writeStartResourceFragment writer nil frag-ref)
-          (. data-writer (writeHitsDataView writer (data-layer->uri "text")))
-          (. data-writer (writeAdvancedDataView writer))
-          (XMLStreamWriterHelper/writeEndResourceFragment writer)
-          (XMLStreamWriterHelper/writeEndResource writer)
-          (vswap! result-idx inc)
-          nil))
+      (writeRecord [writer] (result->xml (results (vswap! idx inc)) writer))
       (hasExtraRecordData [] false)
       (writeExtraRecordData [writer]))))
 
