@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/zentrum-lexikographie/ddc-fcs/compare/v1.0.1...v1.1.0) (2025-07-25)
+
+
+### Features
+
+* add source-size (in documents) to dtaxl and dwdsxl ([a2c8648](https://github.com/zentrum-lexikographie/ddc-fcs/commit/a2c8648df3defc3320a43791fd97fde50c5a0445))
+
 ## [1.0.1](https://github.com/zentrum-lexikographie/ddc-fcs/compare/v1.0.0...v1.0.1) (2025-05-28)
 
 
