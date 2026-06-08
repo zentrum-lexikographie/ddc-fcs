@@ -20,7 +20,7 @@
 (log/handle-uncaught-jvm-exceptions!)
 (log/merge-config!
  {:min-level [["eu.clarin.sru.server.SRUServer" :warn]
-              ["ddc.fcs" (if env/debug? :debug :info)]
+              ["ddc" (if env/debug? :debug :info)]
               ["*" :info]]
   :appenders {:println (log/println-appender {:stream :std-err})}})
 
@@ -237,7 +237,7 @@
         query-type   (. request (getQueryType))
         query        (query/->ddc (. request (getQuery)))
         frag-ref     (result-link corpus query)
-        query        (str query " !#has[avail,OR0W] #separate")
+        query        (str query " " (metadata :query-suffix))
         start-record (. request (getStartRecord))
         num-records  (min (. request (getMaximumRecords)) maximum-records)
         results      (->> (client/query endpoint query

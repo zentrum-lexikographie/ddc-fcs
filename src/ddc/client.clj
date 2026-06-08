@@ -82,7 +82,7 @@
   (take 2 (query ["data.dwds.de" 52170] "Hochkaräter #CNTXT 1" :page-size 2)))
 
 (def metadata-fields
-  [:pid :url :title-de :title-en :author-de :author-en :desc-de :desc-en])
+  [:pid :url :title-de :title-en :author-de :author-en :desc-de :desc-en :query-suffix])
 
 (def metadata
   (with-open [r (io/reader (io/resource "corpus-metadata.csv"))]
