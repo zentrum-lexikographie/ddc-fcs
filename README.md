@@ -10,8 +10,8 @@ Search (FCS) of CLARIN and Text+_
 
 ## Deployment
 
-    DOCKER_HOST="ssh://clarin.bbaw.de" DDC_FCS_RESTART=unless-stopped\
-        docker compose up --build -d
+    DOCKER_HOST="ssh://clarin.bbaw.de"\
+        docker compose -f compose.prod.yml up --build -d
 
 ## License
 
